@@ -1,0 +1,3 @@
+[workspace]
+members = ["tunez-core", "tunez-tools"]
+resolver = "2"

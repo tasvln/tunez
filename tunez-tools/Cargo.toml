@@ -1,0 +1,12 @@
+[package]
+name = "tunez-tools"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "tunez-analyze"
+path = "src/main.rs"
+
+[dependencies]
+hound = "3.5"
+tunez-core = { path = "../tunez-core" }
