@@ -1,17 +1,125 @@
-   0.015090400s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint: stale: changed "C:\\Users\\tasvl\\documents\\projects\\tunez\\tunez-core\\src\\pitch\\mod.rs"
-   0.015390700s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint:           (vs) "C:\\Users\\tasvl\\documents\\projects\\tunez\\target\\debug\\.fingerprint\\tunez-core-5d43e8e96a5e9c9c\\dep-lib-tunez_core"
-   0.015400100s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 13432231344, nanos: 999165500 } < FileTime { seconds: 13432232332, nanos: 24319900 }
-   0.024016200s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint: fingerprint dirty for tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("tunez_core", ["lib"], "C:\\Users\\tasvl\\documents\\projects\\tunez\\tunez-core\\src\\lib.rs", Edition2024) }
-   0.024628000s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "C:\\Users\\tasvl\\documents\\projects\\tunez\\target\\debug\\.fingerprint\\tunez-core-5d43e8e96a5e9c9c\\dep-lib-tunez_core", reference_mtime: FileTime { seconds: 13432231344, nanos: 999165500 }, stale: "C:\\Users\\tasvl\\documents\\projects\\tunez\\tunez-core\\src\\pitch\\mod.rs", stale_mtime: FileTime { seconds: 13432232332, nanos: 24319900 } }))
-   0.025535400s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint: stale: changed "C:\\Users\\tasvl\\documents\\projects\\tunez\\tunez-core\\src\\pitch\\postprocess.rs"
-   0.025545000s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint:           (vs) "C:\\Users\\tasvl\\documents\\projects\\tunez\\target\\debug\\.fingerprint\\tunez-core-d11c46cf33140b86\\dep-test-lib-tunez_core"
-   0.025549400s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 13432231344, nanos: 999165500 } < FileTime { seconds: 13432319881, nanos: 404862300 }
-   0.032618600s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint: fingerprint dirty for tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("tunez_core", ["lib"], "C:\\Users\\tasvl\\documents\\projects\\tunez\\tunez-core\\src\\lib.rs", Edition2024) }
-   0.032634600s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "C:\\Users\\tasvl\\documents\\projects\\tunez\\target\\debug\\.fingerprint\\tunez-core-d11c46cf33140b86\\dep-test-lib-tunez_core", reference_mtime: FileTime { seconds: 13432231344, nanos: 999165500 }, stale: "C:\\Users\\tasvl\\documents\\projects\\tunez\\tunez-core\\src\\pitch\\postprocess.rs", stale_mtime: FileTime { seconds: 13432319881, nanos: 404862300 } }))
-   0.040271800s  INFO prepare_target{force=false package_id=tunez-tools v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-tools) target="tunez-analyze"}: cargo::core::compiler::fingerprint: fingerprint dirty for tunez-tools v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-tools)/Check { test: false }/TargetInner { name: "tunez-analyze", doc: true, ..: with_path("C:\\Users\\tasvl\\documents\\projects\\tunez\\tunez-tools\\src\\main.rs", Edition2024) }
-   0.040289400s  INFO prepare_target{force=false package_id=tunez-tools v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-tools) target="tunez-analyze"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { unit: UnitIndex(1) })
-   0.051132300s  INFO prepare_target{force=false package_id=tunez-tools v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-tools) target="tunez-analyze"}: cargo::core::compiler::fingerprint: fingerprint dirty for tunez-tools v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-tools)/Check { test: true }/TargetInner { name: "tunez-analyze", doc: true, ..: with_path("C:\\Users\\tasvl\\documents\\projects\\tunez\\tunez-tools\\src\\main.rs", Edition2024) }
-   0.051147100s  INFO prepare_target{force=false package_id=tunez-tools v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-tools) target="tunez-analyze"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { unit: UnitIndex(1) })
-    Checking tunez-core v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-core)
-    Checking tunez-tools v0.1.0 (C:\Users\tasvl\documents\projects\tunez\tunez-tools)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s
+   0.029591417s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint: fingerprint error for tunez-core v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-core)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("tunez_core", ["lib"], "/Users/ade/Desktop/projects/tunez/tunez-core/src/lib.rs", Edition2024) }
+   0.030281417s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ade/Desktop/projects/tunez/target/debug/.fingerprint/tunez-core-2893fb216b8298e2/lib-tunez_core`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.069811417s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint: fingerprint error for tunez-core v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-core)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("tunez_core", ["lib"], "/Users/ade/Desktop/projects/tunez/tunez-core/src/lib.rs", Edition2024) }
+   0.069851750s  INFO prepare_target{force=false package_id=tunez-core v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-core) target="tunez_core"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ade/Desktop/projects/tunez/target/debug/.fingerprint/tunez-core-00af7cf4e7c7b536/test-lib-tunez_core`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.070634667s  INFO prepare_target{force=false package_id=tunez-tools v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-tools) target="tunez-analyze"}: cargo::core::compiler::fingerprint: fingerprint error for tunez-tools v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-tools)/Check { test: false }/TargetInner { name: "tunez-analyze", doc: true, ..: with_path("/Users/ade/Desktop/projects/tunez/tunez-tools/src/main.rs", Edition2024) }
+   0.070653250s  INFO prepare_target{force=false package_id=tunez-tools v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-tools) target="tunez-analyze"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ade/Desktop/projects/tunez/target/debug/.fingerprint/tunez-tools-211ca1b9d6b5ef8b/bin-tunez-analyze`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.071336583s  INFO prepare_target{force=false package_id=hound v3.5.1 target="hound"}: cargo::core::compiler::fingerprint: fingerprint error for hound v3.5.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("hound", ["lib"], "/Users/ade/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hound-3.5.1/src/lib.rs", Edition2015) }
+   0.071354125s  INFO prepare_target{force=false package_id=hound v3.5.1 target="hound"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ade/Desktop/projects/tunez/target/debug/.fingerprint/hound-cdedc07a0262e6d2/lib-hound`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+   0.071964708s  INFO prepare_target{force=false package_id=tunez-tools v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-tools) target="tunez-analyze"}: cargo::core::compiler::fingerprint: fingerprint error for tunez-tools v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-tools)/Check { test: true }/TargetInner { name: "tunez-analyze", doc: true, ..: with_path("/Users/ade/Desktop/projects/tunez/tunez-tools/src/main.rs", Edition2024) }
+   0.071980875s  INFO prepare_target{force=false package_id=tunez-tools v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-tools) target="tunez-analyze"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ade/Desktop/projects/tunez/target/debug/.fingerprint/tunez-tools-dcdb78f5a4080902/test-bin-tunez-analyze`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+    Checking tunez-core v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-core)
+    Checking hound v3.5.1
+    Checking tunez-tools v0.1.0 (/Users/ade/Desktop/projects/tunez/tunez-tools)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.09s
