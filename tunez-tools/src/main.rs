@@ -165,13 +165,8 @@ fn read_wav(path: &str) -> Result<(f32, Vec<f32>), String> {
             .map(|s: i16| s as f32 / 32768.0)
             .collect(),
         24 => {
-            let raw: Vec<i32> = reader
-                .samples::<i32>()
-                .filter_map(|s| s.ok())
-                .collect();
-            raw.into_iter()
-                .map(|val| val as f32 / 8388608.0)
-                .collect()
+            let raw: Vec<i32> = reader.samples::<i32>().filter_map(|s| s.ok()).collect();
+            raw.into_iter().map(|val| val as f32 / 8388608.0).collect()
         }
         32 => reader
             .samples::<i32>()
@@ -187,9 +182,9 @@ fn read_wav(path: &str) -> Result<(f32, Vec<f32>), String> {
 // ─── Pitch Detection ─────────────────────────────────────────────────────────
 
 fn process_samples(sample_rate: f32, samples: &[f32], verbose: bool) -> Vec<(f32, f32, f32, bool)> {
-    use tunez_core::pitch::yin::{YinDetector, YinDetectorConfig};
     use tunez_core::pitch::postprocess::PostProcessor;
     use tunez_core::pitch::smoothing::TemporalSmoothing;
+    use tunez_core::pitch::yin::{YinDetector, YinDetectorConfig};
 
     let config = YinDetectorConfig {
         sample_rate,
@@ -199,25 +194,29 @@ fn process_samples(sample_rate: f32, samples: &[f32], verbose: bool) -> Vec<(f32
 
     let mut detector = YinDetector::new(config);
     let mut post = PostProcessor::new_default();
-    let mut smoothing = TemporalSmoothing::new_default(sample_rate);
-
     let hop_size = 256usize;
+    let mut smoothing = TemporalSmoothing::new_default(sample_rate, hop_size);
+
     let mut results: Vec<(f32, f32, f32, bool)> = Vec::new();
 
     let mut offset = 0;
+    let mut frame_index: usize = 0;
+
     while offset + hop_size <= samples.len() {
         let chunk = &samples[offset..offset + hop_size];
         let estimates = detector.process_chunk(chunk);
 
-        // Process all estimates from this chunk
         for raw in estimates {
-            let yin_value = raw.confidence;
+            let detector_confidence = raw.confidence;
             let energy = estimate_energy(chunk);
 
-            let processed = post.process(raw, yin_value, energy);
+            let processed = post.process(raw, detector_confidence, energy);
             let smoothed = smoothing.update(processed);
 
-            let timestamp = offset as f32 / sample_rate + (results.len() as f32) * (256.0 / sample_rate);
+            // ONE source of truth for "how much time has passed":
+            // frame N happened at N hops worth of samples into the file.
+            let timestamp = frame_index as f32 * hop_size as f32 / sample_rate;
+            frame_index += 1;
 
             results.push((
                 timestamp,
@@ -257,12 +256,8 @@ fn write_csv(path: &str, results: &[(f32, f32, f32, bool)]) -> Result<(), String
         .map_err(|e| format!("Write error: {}", e))?;
 
     for (ts, freq, conf, voiced) in results {
-        writeln!(
-            file,
-            "{:.6},{:.4},{:.4},{}",
-            ts, freq, conf, voiced
-        )
-        .map_err(|e| format!("Write error: {}", e))?;
+        writeln!(file, "{:.6},{:.4},{:.4},{}", ts, freq, conf, voiced)
+            .map_err(|e| format!("Write error: {}", e))?;
     }
 
     Ok(())
@@ -270,7 +265,8 @@ fn write_csv(path: &str, results: &[(f32, f32, f32, bool)]) -> Result<(), String
 
 /// Load a reference CSV for comparison (same format: timestamp_s,frequency_hz,confidence,voiced).
 fn load_reference(path: &str) -> Result<Vec<(f32, f32)>, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| format!("Cannot read reference: {}", e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Cannot read reference: {}", e))?;
     let mut ref_data = Vec::new();
     for (i, line) in content.lines().enumerate() {
         if i == 0 {
@@ -306,8 +302,16 @@ fn print_metrics(results: &[(f32, f32, f32, bool)]) {
 
     eprintln!("\n=== Pitch Detection Metrics ===");
     eprintln!("Total estimates:     {}", total);
-    eprintln!("Voiced frames:       {} ({:.1}%)", voiced_count, voiced_count as f64 / total as f64 * 100.0);
-    eprintln!("Unvoiced frames:     {} ({:.1}%)", unvoiced_count, unvoiced_count as f64 / total as f64 * 100.0);
+    eprintln!(
+        "Voiced frames:       {} ({:.1}%)",
+        voiced_count,
+        voiced_count as f64 / total as f64 * 100.0
+    );
+    eprintln!(
+        "Unvoiced frames:     {} ({:.1}%)",
+        unvoiced_count,
+        unvoiced_count as f64 / total as f64 * 100.0
+    );
 
     if !voiced_results.is_empty() {
         let freqs: Vec<f32> = voiced_results.iter().map(|r| r.1).collect();
@@ -317,15 +321,22 @@ fn print_metrics(results: &[(f32, f32, f32, bool)]) {
         sorted_freqs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let median_freq = sorted_freqs[sorted_freqs.len() / 2];
 
-        let variance = freqs.iter().map(|f| (f - mean_freq).powi(2)).sum::<f32>() / freqs.len() as f32;
+        let variance =
+            freqs.iter().map(|f| (f - mean_freq).powi(2)).sum::<f32>() / freqs.len() as f32;
         let std_freq = variance.sqrt();
 
         eprintln!("\nVoiced frequency stats:");
         eprintln!("  Mean:              {:.2} Hz", mean_freq);
         eprintln!("  Median:            {:.2} Hz", median_freq);
         eprintln!("  Std dev:           {:.2} Hz", std_freq);
-        eprintln!("  Min:               {:.2} Hz", sorted_freqs.first().copied().unwrap_or(0.0));
-        eprintln!("  Max:               {:.2} Hz", sorted_freqs.last().copied().unwrap_or(0.0));
+        eprintln!(
+            "  Min:               {:.2} Hz",
+            sorted_freqs.first().copied().unwrap_or(0.0)
+        );
+        eprintln!(
+            "  Max:               {:.2} Hz",
+            sorted_freqs.last().copied().unwrap_or(0.0)
+        );
 
         // Confidence stats
         let confs: Vec<f32> = voiced_results.iter().map(|r| r.2).collect();
@@ -370,7 +381,10 @@ fn print_comparison(results: &[(f32, f32, f32, bool)], reference: &[(f32, f32)])
         eprintln!("Matched estimates:     {}", error_count);
         eprintln!("Mean absolute error:   {:.1} cents", mean_error);
         eprintln!("Octave errors:         {}", octave_errors);
-        eprintln!("Octave error rate:     {:.1}%", octave_errors as f64 / error_count as f64 * 100.0);
+        eprintln!(
+            "Octave error rate:     {:.1}%",
+            octave_errors as f64 / error_count as f64 * 100.0
+        );
     }
 }
 
@@ -380,7 +394,8 @@ fn find_nearest_reference(ts: f32, reference: &[(f32, f32)]) -> Option<(f32, f32
 
     for &(r_ts, r_freq) in reference {
         let dist = (ts - r_ts).abs();
-        if dist < best_dist && dist < 0.02 { // Within 20ms tolerance
+        if dist < best_dist && dist < 0.02 {
+            // Within 20ms tolerance
             best_dist = dist;
             best = Some((r_ts, r_freq));
         }

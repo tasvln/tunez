@@ -135,7 +135,8 @@ impl AnalysisBuffers {
     pub fn apply_hann(&mut self, data: &[f32], window_len: usize) {
         let n = window_len.min(data.len());
         for i in 0..n {
-            let hann = HANN_A - HANN_B * (std::f32::consts::PI * 2.0 * i as f32 / window_len as f32).cos();
+            let hann =
+                HANN_A - HANN_B * (std::f32::consts::PI * 2.0 * i as f32 / window_len as f32).cos();
             self.windowed[i] = data[i] * hann * hann;
         }
     }
@@ -171,30 +172,34 @@ impl RingBuffer {
 
     /// Push a slice of samples into the ring buffer.
     pub fn push_slice(&mut self, samples: &[f32]) {
-        let remaining = self.buffer.len() - self.length;
-        let push_count = samples.len().min(remaining).min(self.buffer.len());
-
-        if self.length + push_count <= self.buffer.len() {
-            // No wrap: direct copy
-            let end = self.write_pos + push_count;
-            if end <= self.buffer.len() {
-                self.buffer[self.write_pos..end].copy_from_slice(&samples[..push_count]);
-            } else {
-                let first = self.buffer.len() - self.write_pos;
-                self.buffer[self.write_pos..].copy_from_slice(&samples[..first]);
-                self.buffer[push_count - first..push_count].copy_from_slice(&samples[first..push_count]);
-            }
-            self.write_pos = (self.write_pos + push_count) % self.buffer.len();
-            self.length = (self.length + push_count).min(self.buffer.len());
-        } else {
-            // Wrap around: push in two parts
-            let first = self.buffer.len() - self.write_pos;
-            self.buffer[self.write_pos..].copy_from_slice(&samples[..first]);
-            let second = push_count - first;
-            self.buffer[..second].copy_from_slice(&samples[first..push_count]);
-            self.write_pos = second;
-            self.length = self.buffer.len();
+        let cap = self.buffer.len();
+        if samples.is_empty() || cap == 0 {
+            return;
         }
+
+        // If more samples arrived than the buffer can even hold, only the
+        // most recent `cap` of them matter — the rest would be overwritten
+        // immediately anyway.
+        let samples = if samples.len() > cap {
+            &samples[samples.len() - cap..]
+        } else {
+            samples
+        };
+        let n = samples.len();
+
+        // Always write — this is the fix. A ring buffer never runs out of
+        // "space" once full; it just overwrites the oldest data as it goes.
+        let end = self.write_pos + n;
+        if end <= cap {
+            self.buffer[self.write_pos..end].copy_from_slice(samples);
+        } else {
+            let first = cap - self.write_pos;
+            self.buffer[self.write_pos..].copy_from_slice(&samples[..first]);
+            self.buffer[..n - first].copy_from_slice(&samples[first..]);
+        }
+
+        self.write_pos = (self.write_pos + n) % cap;
+        self.length = (self.length + n).min(cap);
     }
 
     /// Copy the last `len` samples into `dst`.
@@ -241,6 +246,83 @@ impl RingBuffer {
     }
 }
 
+// Pitch Dectector
+
+/// One plausible pitch found within a single analysis window.
+///
+/// YIN's difference function often dips below threshold at more than one
+/// lag — the true pitch period, and commonly its octave-related multiples
+/// (2x, 3x, 4x the true period, which sound like 1/2, 1/3, 1/4 the true
+/// frequency). Rather than the detector guessing which one is "real" with
+/// no context, it reports the short list and lets a later stage — which
+/// has access to what pitch came before — make the final call.
+#[derive(Debug, Clone, Copy)]
+pub struct PitchCandidate {
+    /// Estimated frequency in Hz, after parabolic interpolation.
+    pub frequency_hz: f32,
+    /// The raw YIN difference value at this candidate (lower = more
+    /// confidently periodic; this is the "low = good" number, distinct
+    /// from PitchEstimate::confidence which is "high = good").
+    pub yin_value: f32,
+    /// The lag in samples this candidate came from, pre-interpolation.
+    /// Kept around because comparing raw lags (not frequencies) is the
+    /// simplest way to check "is candidate B roughly double candidate A's
+    /// period" later on.
+    pub tau: usize,
+}
+
+// Tracking
+
+/// Controls how pitch candidates are chosen using the previous frame's
+/// accepted pitch as context, not just raw periodicity in isolation.
+#[derive(Debug, Clone)]
+pub struct TrackingConfig {
+    /// 0.0 = ignore history, always trust whichever candidate is most
+    /// periodic. 1.0 = ignore periodicity, always pick whichever
+    /// candidate is closest to the previous pitch.
+    pub continuity_weight: f32,
+    /// Cents distance beyond which "being closer" stops mattering.
+    pub max_jump_cents: f32,
+}
+
+impl Default for TrackingConfig {
+    fn default() -> Self {
+        Self {
+            continuity_weight: 0.4,
+            max_jump_cents: 600.0,
+        }
+    }
+}
+
+/// Choose the best candidate given what the previous frame settled on.
+fn pick_candidate(
+    candidates: &[PitchCandidate],
+    prev_freq_hz: Option<f32>,
+    config: &TrackingConfig,
+) -> Option<PitchCandidate> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let Some(prev_freq) = prev_freq_hz else {
+        return Some(candidates[0]); // no history, trust periodicity
+    };
+
+    let mut best: Option<(f32, PitchCandidate)> = None;
+    for &c in candidates {
+        let cents_away = (1200.0 * (c.frequency_hz / prev_freq).log2()).abs();
+        let continuity_term = (cents_away / config.max_jump_cents).min(1.0);
+        let score = c.yin_value * (1.0 - config.continuity_weight)
+            + continuity_term * config.continuity_weight;
+
+        if best.map_or(true, |(best_score, _)| score < best_score) {
+            best = Some((score, c));
+        }
+    }
+
+    best.map(|(_, c)| c)
+}
+
 // ─── YIN Detector ────────────────────────────────────────────────────────────
 
 /// The YIN pitch detector.
@@ -272,6 +354,8 @@ pub struct YinDetector {
     samples_since_analysis: usize,
     /// Total samples processed (for offset tracking).
     total_samples: usize,
+    tracking: TrackingConfig,
+    prev_freq_hz: Option<f32>,
 }
 
 impl YinDetector {
@@ -285,6 +369,8 @@ impl YinDetector {
             buffers: AnalysisBuffers::new(max_lag),
             samples_since_analysis: 0,
             total_samples: 0,
+            tracking: TrackingConfig::default(),
+            prev_freq_hz: None,
         }
     }
 
@@ -310,6 +396,7 @@ impl YinDetector {
         self.ring_buffer.clear();
         self.total_samples = 0;
         self.samples_since_analysis = 0;
+        self.prev_freq_hz = None;
     }
 
     /// Process a single sample (for backward compatibility with frame-by-frame pipelines).
@@ -321,7 +408,9 @@ impl YinDetector {
         let min_needed = self.config.min_buffer_size();
 
         // Count how many analysis windows are complete
-        let windows_complete = (self.total_samples.saturating_sub(min_needed)).saturating_sub(self.samples_since_analysis) / self.config.hop_size;
+        let windows_complete = (self.total_samples.saturating_sub(min_needed))
+            .saturating_sub(self.samples_since_analysis)
+            / self.config.hop_size;
 
         if windows_complete > 0 {
             let est = self.analyze_next();
@@ -354,7 +443,9 @@ impl YinDetector {
         let min_start = min_needed;
 
         // Count how many analysis windows are complete
-        let windows_complete = (total.saturating_sub(min_start)).saturating_sub(self.samples_since_analysis) / self.config.hop_size;
+        let windows_complete = (total.saturating_sub(min_start))
+            .saturating_sub(self.samples_since_analysis)
+            / self.config.hop_size;
 
         for _ in 0..windows_complete {
             let est = self.analyze_next();
@@ -365,18 +456,79 @@ impl YinDetector {
         estimates
     }
 
-    /// Analyze one window: extract last `window_size` samples, apply Hann window, run YIN.
-    fn analyze_next(&mut self) -> PitchEstimate {
-        let window_size = self.config.window_size();
-        let max_lag = self.config.max_lag();
-        let tau_min = self.config.tau_samples();
-        let threshold = self.config.threshold;
+    // /// Scan the YIN curve for every local minimum that dips below threshold,
+    // /// not just the first or the deepest. Returns them sorted best-first
+    // /// (lowest yin_value = most periodic = most likely correct).
+    // fn find_candidates(&self, tau_min: usize, max_lag: usize, threshold: f32) -> Vec<(usize, f32)> {
+    //     let mut candidates = Vec::new();
+    //     let mut tau = tau_min;
 
-        // Extract the analysis window into a temp buffer (avoids borrow conflict)
+    //     while tau <= max_lag {
+    //         let val = self.buffers.yin[tau];
+
+    //         if val < threshold {
+    //             // Walk forward to the actual bottom of this dip, same idea
+    //             // as before — don't stop at the first point that crossed
+    //             // the line, find where it stops falling.
+    //             let mut t = tau;
+    //             while t + 1 <= max_lag && self.buffers.yin[t + 1] < self.buffers.yin[t] {
+    //                 t += 1;
+    //             }
+    //             candidates.push((t, self.buffers.yin[t]));
+
+    //             // Skip past this whole dip so we don't re-detect the same
+    //             // minimum on the way back up the other side of it.
+    //             while t + 1 <= max_lag && self.buffers.yin[t + 1] > self.buffers.yin[t] {
+    //                 t += 1;
+    //             }
+    //             tau = t + 1;
+    //         } else {
+    //             tau += 1;
+    //         }
+    //     }
+
+    //     // Best (lowest yin_value) first.
+    //     candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    //     candidates
+    // }
+
+    fn find_candidates(&self, tau_min: usize, max_lag: usize, threshold: f32) -> Vec<(usize, f32)> {
+        let mut candidates = Vec::new();
+        let mut tau = tau_min;
+
+        while tau <= max_lag {
+            let val = self.buffers.yin[tau];
+
+            if val < threshold {
+                let mut t = tau;
+                while t + 1 <= max_lag && self.buffers.yin[t + 1] < self.buffers.yin[t] {
+                    t += 1;
+                }
+                candidates.push((t, self.buffers.yin[t]));
+
+                // Skip past this dip so we don't re-find the same minimum
+                // on the way back up the other side of it.
+                while t + 1 <= max_lag && self.buffers.yin[t + 1] > self.buffers.yin[t] {
+                    t += 1;
+                }
+                tau = t + 1;
+            } else {
+                tau += 1;
+            }
+        }
+
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        candidates
+    }
+
+    /// Steps 1-2 of YIN: window the latest audio, compute the difference
+    /// function, then the cumulative mean normalized difference. Fills
+    /// self.buffers.yin — both analyze_next and analyze_candidates read
+    /// from it afterward, so this is the one place that math lives.
+    fn compute_yin_curve(&mut self, window_size: usize, max_lag: usize, tau_min: usize) {
         let mut temp = [0.0f32; 8192];
-        self.ring_buffer.last_n(window_size, &mut temp[..window_size]);
-
-        // Apply Hann window
+        self.ring_buffer
+            .last_n(window_size, &mut temp[..window_size]);
         self.buffers.apply_hann(&temp[..window_size], window_size);
 
         // Step 1: Difference function
@@ -392,87 +544,109 @@ impl YinDetector {
         }
 
         // Step 2: Cumulative mean normalized difference
-        // YIN[tau] = diff[tau] / (tau * mean(diff[0..tau]))
         self.buffers.yin[0] = 1.0;
         self.buffers.yin[1] = 1.0;
         let mut cumsum: f32 = 0.0;
         for tau in 2..=max_lag {
             cumsum += self.buffers.diff[tau - 1];
             let mean = cumsum / tau as f32;
-            if mean > 1e-10 {
-                self.buffers.yin[tau] = self.buffers.diff[tau] / (tau as f32 * mean);
+            self.buffers.yin[tau] = if mean > 1e-10 {
+                self.buffers.diff[tau] / (tau as f32 * mean)
             } else {
-                self.buffers.yin[tau] = 1.0;
+                1.0
+            };
+        }
+    }
+
+    /// Like `analyze_next`, but exposes the full ranked candidate list
+    /// instead of committing to a single winner.
+    pub fn analyze_candidates(&mut self) -> Vec<PitchCandidate> {
+        let window_size = self.config.window_size();
+        let max_lag = self.config.max_lag();
+        let tau_min = self.config.min_lag();
+        let threshold = self.config.threshold;
+
+        // Steps 1-2: windowing + difference function + cumulative mean
+        // normalization — identical to analyze_next, fills self.buffers.yin.
+        self.compute_yin_curve(window_size, max_lag, tau_min);
+
+        let raw_candidates = self.find_candidates(tau_min, max_lag, threshold);
+
+        raw_candidates
+            .into_iter()
+            .map(|(tau, _)| {
+                let (period, yin_value) = self.interpolate_minimum(tau, tau_min, max_lag);
+                let freq = (self.config.sample_rate / period)
+                    .clamp(self.config.min_freq_hz, self.config.max_freq_hz);
+                PitchCandidate {
+                    frequency_hz: freq,
+                    yin_value,
+                    tau,
+                }
+            })
+            .collect()
+    }
+
+    /// Parabolic interpolation around a minimum at `tau`, for sub-sample
+    /// period accuracy. Returns (refined_period, interpolated_yin_value).
+    fn interpolate_minimum(&self, tau: usize, tau_min: usize, max_lag: usize) -> (f32, f32) {
+        if tau > tau_min + 1 && tau < max_lag {
+            let y_prev = self.buffers.yin[tau - 1];
+            let y_center = self.buffers.yin[tau];
+            let y_next = self.buffers.yin[tau + 1];
+            let denom = 2.0 * (y_center - 0.5 * (y_prev + y_next));
+            if denom.abs() > 1e-10 {
+                let delta = (0.5 * (y_next - y_prev) / denom).clamp(-0.5, 0.5);
+                let yin_value = y_center - 0.25 * (y_next - y_prev) * delta;
+                return (tau as f32 + delta, yin_value);
             }
         }
+        (tau as f32, self.buffers.yin[tau])
+    }
 
-        // Step 3: Absolute threshold search
-        // Search for the tau with the LOWEST YIN value below threshold.
-        // Using the global minimum (not just first local min) prevents picking
-        // harmonics at shorter periods for low-frequency fundamentals.
-        let mut tau_found = 0;
-        let mut best_yin = f32::MAX;
-        let mut found = false;
+    /// Analyze one window: extract last `window_size` samples, apply Hann window, run YIN.
+    fn analyze_next(&mut self) -> PitchEstimate {
+        let window_size = self.config.window_size();
+        let max_lag = self.config.max_lag();
+        let tau_min = self.config.min_lag();
+        let threshold = self.config.threshold;
 
-        for tau in tau_min..=max_lag {
-            let yin_val = self.buffers.yin[tau];
-            if yin_val < threshold && yin_val < best_yin {
-                best_yin = yin_val;
-                tau_found = tau;
-                found = true;
-            }
-        }
+        self.compute_yin_curve(window_size, max_lag, tau_min);
 
-        if !found {
-            // No voiced period found: return unvoiced
+        // Step 3: first-dip-below-threshold search (the A5/Hypothesis-1 fix)
+        let raw_candidates = self.find_candidates(tau_min, max_lag, threshold);
+        if raw_candidates.is_empty() {
+            self.prev_freq_hz = None; // lost the thread, don't bias the next frame
             return PitchEstimate::unvoiced();
         }
 
-        // Step 4: Parabolic interpolation for sub-sample accuracy
-        // Refine tau_found by delta to get sub-sample period estimate.
-        // yin_value is the interpolated YIN value (used for confidence).
-        let yin_value: f32;
-        let period: f32; // sub-sample refined period
-        if tau_found > tau_min + 1 && tau_found < max_lag {
-            let y_prev = self.buffers.yin[tau_found - 1];
-            let y_center = self.buffers.yin[tau_found];
-            let y_next = self.buffers.yin[tau_found + 1];
-            let denom = 2.0 * (y_center - 0.5 * (y_prev + y_next));
-            if denom.abs() > 1e-10 {
-                let delta = 0.5 * (y_next - y_prev) / denom;
-                // Clamp to [-0.5, 0.5]
-                let delta = delta.clamp(-0.5, 0.5);
-                // YIN value at interpolated point
-                yin_value = y_center - 0.25 * (y_next - y_prev) * delta;
-                // Use sub-sample refined period
-                period = tau_found as f32 + delta;
-            } else {
-                yin_value = y_center;
-                period = tau_found as f32;
-            }
-        } else {
-            yin_value = self.buffers.yin[tau_found];
-            period = tau_found as f32;
-        }
+        let candidates: Vec<PitchCandidate> = raw_candidates
+            .into_iter()
+            .map(|(tau, _)| {
+                let (period, yin_value) = self.interpolate_minimum(tau, tau_min, max_lag);
+                let freq = (self.config.sample_rate / period)
+                    .clamp(self.config.min_freq_hz, self.config.max_freq_hz);
+                PitchCandidate {
+                    frequency_hz: freq,
+                    yin_value,
+                    tau,
+                }
+            })
+            .collect();
 
-        // Step 5: Octave error check
-        // If 2*tau has a YIN value significantly lower than the true minimum,
-        // the signal may have stronger periodicity at the lower octave.
-        // We use the lower octave if YIN[2*tau] is BOTH:
-        //   (a) below the absolute threshold, AND
-        //   (b) at least MIN_OCTAVE_GAP lower than YIN[tau], AND
-        //   (c) a local minimum in the YIN function.
-        // This prevents picking 2*tau for clean sines where the true minimum
-        // is already very low (e.g., 0.05) but 2*tau is only slightly higher (0.08).
-        // Previously we used: yin_double < yin_value * 1.2 (too permissive).
-        const MIN_OCTAVE_GAP: f32 = 0.08; // Absolute YIN difference required
+        let chosen = pick_candidate(&candidates, self.prev_freq_hz, &self.tracking).unwrap();
+        let tau_found = chosen.tau;
+
+        // Step 4: parabolic interpolation (now shared with analyze_candidates)
+        let (period, yin_value) = self.interpolate_minimum(tau_found, tau_min, max_lag);
+
+        // Step 5: octave error check (unchanged from before)
+        const MIN_OCTAVE_GAP: f32 = 0.08;
         let mut final_period = period;
         let double_tau = 2 * tau_found;
         if double_tau <= max_lag {
             let yin_double = self.buffers.yin[double_tau];
-            // Must be below threshold AND sufficiently better than true minimum
             if yin_double < threshold && (yin_value - yin_double) > MIN_OCTAVE_GAP {
-                // Check that 2*tau is also a local minimum
                 let is_min = if double_tau < max_lag {
                     self.buffers.yin[double_tau] <= self.buffers.yin[double_tau - 1]
                         && self.buffers.yin[double_tau] <= self.buffers.yin[double_tau + 1]
@@ -485,49 +659,44 @@ impl YinDetector {
             }
         }
 
-        // Step 6: Convert period to frequency
+        // Step 6: convert period to frequency
         let freq = if final_period > 0.0 {
             self.config.sample_rate / final_period
         } else {
             0.0
         };
-
-        // Clamp to valid frequency range
         let freq = freq.clamp(self.config.min_freq_hz, self.config.max_freq_hz);
 
-        // Step 7: Energy-based voicing veto
-        // Compute signal energy to reject silence / very quiet signals
+        // Step 7: energy-based voicing veto
+        let window_size_f = window_size as f32;
         let mut energy: f32 = 0.0;
         for n in 0..window_size {
             energy += self.buffers.windowed[n] * self.buffers.windowed[n];
         }
-        energy /= window_size as f32;
+        energy /= window_size_f;
         let rms = energy.sqrt();
 
-        // Voicing decision:
-        // - YIN must be below threshold (strong periodicity)
-        // - RMS must be above minimum detectable level (raised from 1e-4 to reject noise)
-        // - Frequency must be in valid vocal range
-        // RMS threshold: noise typically has RMS > 0.005, silence < 0.001.
-        // Using 0.005 as default to reject quiet noise while keeping breathy vocals.
-        let voiced = yin_value < threshold && rms > 0.005 && freq >= self.config.min_freq_hz && freq <= self.config.max_freq_hz;
+        let voiced = yin_value < threshold
+            && rms > 0.005
+            && freq >= self.config.min_freq_hz
+            && freq <= self.config.max_freq_hz;
 
-        // Step 8: Confidence estimation
-        // Map YIN value and RMS to a confidence score in [0, 1].
-        // Lower YIN = higher confidence. Higher RMS = higher confidence.
-        // Use the configured threshold for normalization (not hard-coded).
+        // Step 8: confidence estimation
         let yin_confidence = if yin_value < threshold {
             1.0 - (yin_value / threshold)
         } else {
             0.0
         };
-        // RMS confidence: 0.001 -> ~0.0, 0.01 -> ~0.2, 0.1 -> ~1.0
         let energy_confidence = (rms * 10.0).clamp(0.0, 1.0);
         let confidence = yin_confidence * 0.75 + energy_confidence * 0.25;
 
+        if voiced {
+            self.prev_freq_hz = Some(freq);
+        }
+
         PitchEstimate {
             frequency_hz: freq,
-            confidence: confidence,
+            confidence,
             voiced,
         }
     }
@@ -552,7 +721,13 @@ mod tests {
         out
     }
 
-    fn vibrato_signal(base_freq: f32, vibrato_hz: f32, vibrato_depth: f32, duration_s: f32, sample_rate: f32) -> Vec<f32> {
+    fn vibrato_signal(
+        base_freq: f32,
+        vibrato_hz: f32,
+        vibrato_depth: f32,
+        duration_s: f32,
+        sample_rate: f32,
+    ) -> Vec<f32> {
         let n = (duration_s * sample_rate) as usize;
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
@@ -563,7 +738,13 @@ mod tests {
         out
     }
 
-    fn noisy_sine(freq: f32, snr_db: f32, duration_s: f32, sample_rate: f32, seed: u32) -> Vec<f32> {
+    fn noisy_sine(
+        freq: f32,
+        snr_db: f32,
+        duration_s: f32,
+        sample_rate: f32,
+        seed: u32,
+    ) -> Vec<f32> {
         let n = (duration_s * sample_rate) as usize;
         let signal_power = 0.5; // sin^2 average = 0.5
         let noise_power = signal_power / (10.0_f32).powf(snr_db / 10.0);
@@ -583,9 +764,7 @@ mod tests {
         let n = (duration_s * sample_rate) as usize;
         let std = power.sqrt();
         let mut rng = SimpleRng::new(seed);
-        (0..n)
-            .map(|_| (rng.next_f32() - 0.5) * 2.0 * std)
-            .collect()
+        (0..n).map(|_| (rng.next_f32() - 0.5) * 2.0 * std).collect()
     }
 
     fn silence(n_samples: usize) -> Vec<f32> {
@@ -607,7 +786,13 @@ mod tests {
         out
     }
 
-    fn breathy_vowel(base_freq: f32, breathiness_ratio: f32, duration_s: f32, sample_rate: f32, seed: u32) -> Vec<f32> {
+    fn breathy_vowel(
+        base_freq: f32,
+        breathiness_ratio: f32,
+        duration_s: f32,
+        sample_rate: f32,
+        seed: u32,
+    ) -> Vec<f32> {
         // Simulate breathy voice: periodic component + broadband noise
         let n = (duration_s * sample_rate) as usize;
         let mut rng = SimpleRng::new(seed);
@@ -641,20 +826,29 @@ mod tests {
         let estimates = detector.process_chunk(&samples);
 
         let voiced: Vec<_> = estimates.iter().filter(|e| e.voiced).collect();
-        assert!(!voiced.is_empty(), "Should detect voiced frames for 440 Hz sine");
+        assert!(
+            !voiced.is_empty(),
+            "Should detect voiced frames for 440 Hz sine"
+        );
 
         // Measure mean frequency error in cents
-        let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+        let mean_freq: f32 =
+            voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
         let error_cents = 1200.0 * (mean_freq / 440.0).log2();
         assert!(
             error_cents.abs() < 2.0,
             "440 Hz: mean freq {:.2} Hz, error {:.1} cents",
-            mean_freq, error_cents
+            mean_freq,
+            error_cents
         );
 
         // Check confidence is high
         let mean_conf: f32 = voiced.iter().map(|e| e.confidence).sum::<f32>() / voiced.len() as f32;
-        assert!(mean_conf > 0.5, "Confidence for clean sine should be high: {}", mean_conf);
+        assert!(
+            mean_conf > 0.5,
+            "Confidence for clean sine should be high: {}",
+            mean_conf
+        );
     }
 
     #[test]
@@ -672,12 +866,14 @@ mod tests {
         let voiced: Vec<_> = estimates.iter().filter(|e| e.voiced).collect();
         assert!(!voiced.is_empty(), "Should detect voiced frames for 220 Hz");
 
-        let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+        let mean_freq: f32 =
+            voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
         let error_cents = 1200.0 * (mean_freq / 220.0).log2();
         assert!(
             error_cents.abs() < 2.0,
             "220 Hz: mean freq {:.2} Hz, error {:.1} cents",
-            mean_freq, error_cents
+            mean_freq,
+            error_cents
         );
     }
 
@@ -699,12 +895,15 @@ mod tests {
 
             let voiced: Vec<_> = estimates.iter().filter(|e| e.voiced).collect();
             if !voiced.is_empty() {
-                let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+                let mean_freq: f32 =
+                    voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
                 let error_cents = 1200.0 * (mean_freq / freq).log2();
                 assert!(
                     error_cents.abs() < 3.0,
                     "{} Hz: detected {:.2} Hz, error {:.1} cents",
-                    freq, mean_freq, error_cents
+                    freq,
+                    mean_freq,
+                    error_cents
                 );
             }
             detector.reset();
@@ -729,12 +928,15 @@ mod tests {
 
             let voiced: Vec<_> = estimates.iter().filter(|e| e.voiced).collect();
             if !voiced.is_empty() {
-                let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+                let mean_freq: f32 =
+                    voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
                 let error_cents = 1200.0 * (mean_freq / freq).log2();
                 assert!(
                     error_cents.abs() < 2.0,
                     "{} Hz: detected {:.2} Hz, error {:.1} cents",
-                    freq, mean_freq, error_cents
+                    freq,
+                    mean_freq,
+                    error_cents
                 );
             }
             detector.reset();
@@ -778,11 +980,13 @@ mod tests {
 
         assert!(
             (med_220 - 220.0).abs() < 5.0,
-            "220 Hz: median {:.2} Hz", med_220
+            "220 Hz: median {:.2} Hz",
+            med_220
         );
         assert!(
             (med_440 - 440.0).abs() < 5.0,
-            "440 Hz: median {:.2} Hz", med_440
+            "440 Hz: median {:.2} Hz",
+            med_440
         );
     }
 
@@ -821,11 +1025,13 @@ mod tests {
 
         assert!(
             (med_110 - 110.0).abs() < 5.0,
-            "110 Hz: median {:.2} Hz", med_110
+            "110 Hz: median {:.2} Hz",
+            med_110
         );
         assert!(
             (med_220 - 220.0).abs() < 5.0,
-            "220 Hz: median {:.2} Hz", med_220
+            "220 Hz: median {:.2} Hz",
+            med_220
         );
     }
 
@@ -845,15 +1051,20 @@ mod tests {
         let estimates = detector.process_chunk(&samples);
 
         let voiced: Vec<_> = estimates.iter().filter(|e| e.voiced).collect();
-        assert!(!voiced.is_empty(), "Should detect pitched sawtooth at 110 Hz");
+        assert!(
+            !voiced.is_empty(),
+            "Should detect pitched sawtooth at 110 Hz"
+        );
 
         if !voiced.is_empty() {
-            let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+            let mean_freq: f32 =
+                voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
             let error_cents = 1200.0 * (mean_freq / 110.0).log2();
             assert!(
                 error_cents.abs() < 5.0,
                 "Sawtooth 110 Hz: detected {:.2} Hz, error {:.1} cents",
-                mean_freq, error_cents
+                mean_freq,
+                error_cents
             );
         }
     }
@@ -876,7 +1087,8 @@ mod tests {
 
         // Mean frequency should be close to 440 Hz
         if !voiced.is_empty() {
-            let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+            let mean_freq: f32 =
+                voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
             assert!(
                 (mean_freq - 440.0).abs() < 10.0,
                 "Vibrato mean: {:.2} Hz (expected ~440 Hz)",
@@ -903,7 +1115,9 @@ mod tests {
             assert!(
                 ratio < 0.05,
                 "Silence: {:.0}% voiced frames (expected <5%), got {} / {}",
-                ratio * 100.0, voiced_count, estimates.len()
+                ratio * 100.0,
+                voiced_count,
+                estimates.len()
             );
         }
     }
@@ -926,7 +1140,9 @@ mod tests {
             assert!(
                 ratio < 0.2,
                 "White noise: {:.0}% voiced (expected <20%), got {} / {}",
-                ratio * 100.0, voiced_count, estimates.len()
+                ratio * 100.0,
+                voiced_count,
+                estimates.len()
             );
         }
     }
@@ -946,12 +1162,14 @@ mod tests {
 
         let voiced: Vec<_> = estimates.iter().filter(|e| e.voiced).collect();
         if !voiced.is_empty() {
-            let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+            let mean_freq: f32 =
+                voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
             let error_cents = 1200.0 * (mean_freq / 440.0).log2();
             assert!(
                 error_cents.abs() < 5.0,
                 "Noisy 440 Hz @ 20dB: detected {:.2} Hz, error {:.1} cents",
-                mean_freq, error_cents
+                mean_freq,
+                error_cents
             );
         }
     }
@@ -973,12 +1191,14 @@ mod tests {
 
         let voiced: Vec<_> = estimates.iter().filter(|e| e.voiced).collect();
         if !voiced.is_empty() {
-            let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+            let mean_freq: f32 =
+                voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
             let error_cents = 1200.0 * (mean_freq / 220.0).log2();
             assert!(
                 error_cents.abs() < 8.0,
                 "Noisy 220 Hz @ 10dB: detected {:.2} Hz, error {:.1} cents",
-                mean_freq, error_cents
+                mean_freq,
+                error_cents
             );
         }
     }
@@ -1001,12 +1221,14 @@ mod tests {
 
         let voiced: Vec<_> = estimates.iter().filter(|e| e.voiced).collect();
         if !voiced.is_empty() {
-            let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+            let mean_freq: f32 =
+                voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
             let error_cents = 1200.0 * (mean_freq / 200.0).log2();
             assert!(
                 error_cents.abs() < 5.0,
                 "Breathy 200 Hz: detected {:.2} Hz, error {:.1} cents",
-                mean_freq, error_cents
+                mean_freq,
+                error_cents
             );
         }
     }
@@ -1028,12 +1250,15 @@ mod tests {
             assert!(!voiced.is_empty(), "{} Hz sr: should detect voiced", sr);
 
             if !voiced.is_empty() {
-                let mean_freq: f32 = voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
+                let mean_freq: f32 =
+                    voiced.iter().map(|e| e.frequency_hz).sum::<f32>() / voiced.len() as f32;
                 let error_cents = 1200.0 * (mean_freq / 440.0).log2();
                 assert!(
                     error_cents.abs() < 3.0,
                     "{} Hz sr: error {:.1} cents at {:.2} Hz",
-                    sr, error_cents, mean_freq
+                    sr,
+                    error_cents,
+                    mean_freq
                 );
             }
             detector.reset();
@@ -1088,7 +1313,10 @@ mod tests {
 
         // Should have both voiced and unvoiced estimates
         assert!(voiced_count > 0, "Should detect voiced frames");
-        assert!(unvoiced_count > 0, "Should detect unvoiced frames in silence gap");
+        assert!(
+            unvoiced_count > 0,
+            "Should detect unvoiced frames in silence gap"
+        );
 
         // Voiced frames should all be near 440 Hz
         for est in estimates.iter().filter(|e| e.voiced) {
@@ -1155,13 +1383,15 @@ mod tests {
         let estimates = detector.process_chunk(&samples);
 
         // Check that we don't have octave errors at ~110 Hz
-        let octave_errors: Vec<_> = estimates.iter()
+        let octave_errors: Vec<_> = estimates
+            .iter()
             .filter(|e| e.voiced && (e.frequency_hz - 110.0).abs() < 10.0)
             .collect();
 
         // With tau=2ms (~88 samples at 44.1kHz), octave should be rejected
         assert!(
-            octave_errors.len() == 0 || octave_errors.len() < estimates.iter().filter(|e| e.voiced).count() / 4,
+            octave_errors.len() == 0
+                || octave_errors.len() < estimates.iter().filter(|e| e.voiced).count() / 4,
             "Octave errors at 110 Hz: {} out of {} voiced frames",
             octave_errors.len(),
             estimates.iter().filter(|e| e.voiced).count()
@@ -1183,7 +1413,8 @@ mod tests {
         // Voiced
         let mut detector = YinDetector::new(config.clone());
         let voiced_est = detector.process_chunk(&voiced_samples);
-        let voiced_confidences: Vec<f32> = voiced_est.iter()
+        let voiced_confidences: Vec<f32> = voiced_est
+            .iter()
             .filter(|e| e.voiced)
             .map(|e| e.confidence)
             .collect();
@@ -1191,20 +1422,67 @@ mod tests {
         // Unvoiced
         let mut detector = YinDetector::new(config);
         let unvoiced_est = detector.process_chunk(&unvoiced_samples);
-        let unvoiced_confidences: Vec<f32> = unvoiced_est.iter()
+        let unvoiced_confidences: Vec<f32> = unvoiced_est
+            .iter()
             .filter(|e| !e.voiced)
             .map(|e| e.confidence)
             .collect();
 
         if !voiced_confidences.is_empty() {
-            let mean_v: f32 = voiced_confidences.iter().sum::<f32>() / voiced_confidences.len() as f32;
-            assert!(mean_v > 0.3, "Voiced confidence should be moderate+: {:.3}", mean_v);
+            let mean_v: f32 =
+                voiced_confidences.iter().sum::<f32>() / voiced_confidences.len() as f32;
+            assert!(
+                mean_v > 0.3,
+                "Voiced confidence should be moderate+: {:.3}",
+                mean_v
+            );
         }
 
         if !unvoiced_confidences.is_empty() {
-            let mean_u: f32 = unvoiced_confidences.iter().sum::<f32>() / unvoiced_confidences.len() as f32;
-            assert!(mean_u < 0.5, "Unvoiced confidence should be low: {:.3}", mean_u);
+            let mean_u: f32 =
+                unvoiced_confidences.iter().sum::<f32>() / unvoiced_confidences.len() as f32;
+            assert!(
+                mean_u < 0.5,
+                "Unvoiced confidence should be low: {:.3}",
+                mean_u
+            );
         }
+    }
+
+    #[test]
+    fn test_candidates_include_true_pitch_on_harmonic_rich_signal() {
+        // A high, harmonically-simple tone — similar to what bleep.wav
+        // revealed: true pitch ~1000 Hz, but naive single-answer search
+        // kept landing on a sub-harmonic (250 Hz, 333 Hz) instead.
+        let sr = 44100.0;
+        let samples = sine_wave(1000.0, 0.3, sr);
+        let config = YinDetectorConfig {
+            sample_rate: sr,
+            hop_size: 256,
+            min_freq_hz: 65.0,
+            max_freq_hz: 1200.0,
+            ..Default::default()
+        };
+        let mut detector = YinDetector::new(config);
+
+        // Feed enough samples to fill one analysis window, then pull candidates.
+        detector.ring_buffer.push_slice(&samples);
+        let candidates = detector.analyze_candidates();
+
+        assert!(!candidates.is_empty(), "should find at least one candidate");
+
+        let has_true_pitch = candidates
+            .iter()
+            .any(|c| (c.frequency_hz - 1000.0).abs() < 10.0);
+
+        assert!(
+            has_true_pitch,
+            "true ~1000Hz pitch should appear somewhere in the candidate list, got: {:?}",
+            candidates
+                .iter()
+                .map(|c| c.frequency_hz)
+                .collect::<Vec<_>>()
+        );
     }
 }
 

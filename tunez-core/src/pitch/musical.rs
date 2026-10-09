@@ -20,7 +20,7 @@ pub const MIDI_MIN: i32 = 0;
 pub const MIDI_MAX: i32 = 127;
 
 /// Frequency range corresponding to MIDI notes.
-pub const FREQ_MIN: f32 = 8.176;  // MIDI 0 (C-1)
+pub const FREQ_MIN: f32 = 8.176; // MIDI 0 (C-1)
 pub const FREQ_MAX: f32 = 12543.8; // MIDI 127 (C10)
 
 // ─── Scale definitions ──────────────────────────────────────────────────────
@@ -65,19 +65,24 @@ const MELODIC_MINOR_SCALE: [i32; 7] = [0, 2, 3, 5, 7, 9, 11];
 
 /// Scale degrees for a given key and type.
 /// Returns intervals from the tonic (e.g., for A minor: [0,2,3,5,7,8,10]).
-pub fn scale_degrees(_key_chroma: i32, scale_type: ScaleType) -> [i32; 7] {
-    match scale_type {
+pub fn scale_degrees(key_chroma: i32, scale_type: ScaleType) -> [i32; 7] {
+    let intervals = match scale_type {
         ScaleType::Major => MAJOR_SCALE,
         ScaleType::NaturalMinor => NATURAL_MINOR_SCALE,
         ScaleType::HarmonicMinor => HARMONIC_MINOR_SCALE,
         ScaleType::MelodicMinor => MELODIC_MINOR_SCALE,
+    };
+
+    let mut degrees = [0i32; 7];
+    for (i, interval) in intervals.iter().enumerate() {
+        degrees[i] = ((key_chroma + interval) % 12 + 12) % 12;
     }
+    degrees
 }
 
 /// All 12 chroma names (for lookup).
 pub const CHROMA_NAMES: [&str; 12] = [
-    "C", "C#/Db", "D", "D#/Eb", "E",
-    "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B",
+    "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B",
 ];
 
 /// Get the name of a chroma.
@@ -189,11 +194,7 @@ pub fn nearest_scale_note(freq_hz: f32, key_chroma: i32, scale_type: ScaleType) 
 /// Distance between two chroma values (circular, min distance).
 fn chroma_distance(a: i32, b: i32) -> i32 {
     let d = (a - b).abs();
-    if d > 6 {
-        12 - d
-    } else {
-        d
-    }
+    if d > 6 { 12 - d } else { d }
 }
 
 /// Convert semitone (float MIDI note) to frequency (Hz).
@@ -205,7 +206,20 @@ pub fn semitone_to_freq(semitone: f32) -> f32 {
 pub fn scale_notes_in_octave(key_chroma: i32, scale_type: ScaleType, octave: i32) -> Vec<i32> {
     let degrees = scale_degrees(key_chroma, scale_type);
     let base = octave * 12; // MIDI base for this octave
-    degrees.iter().map(|&d| base + d).collect()
+    degrees
+        .iter()
+        .map(|&d| {
+            // Degrees are absolute chromas starting at the tonic and
+            // climbing upward. Anything numerically less than the tonic's
+            // own chroma has wrapped past the octave boundary (B -> C,
+            // e.g.) and belongs one octave higher than `base`.
+            if d < key_chroma {
+                base + 12 + d
+            } else {
+                base + d
+            }
+        })
+        .collect()
 }
 
 /// Target mode: how to snap to notes.
@@ -250,15 +264,18 @@ impl Default for TargetConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f32::consts::PI;
-    use crate::pitch::TargetGenerator;
     use crate::pitch::PitchEstimate;
+    use crate::pitch::TargetGenerator;
+    use std::f32::consts::PI;
 
     /// A4 = 440 Hz, MIDI 69.
     #[test]
     fn test_a4_440hz_midi_69() {
         let midi = freq_to_midi(440.0);
-        assert!((midi - 69.0).abs() < 0.01, "440 Hz should be MIDI 69, got {midi}");
+        assert!(
+            (midi - 69.0).abs() < 0.01,
+            "440 Hz should be MIDI 69, got {midi}"
+        );
         assert_eq!(nearest_midi(440.0), 69);
     }
 
@@ -266,14 +283,20 @@ mod tests {
     #[test]
     fn test_a5_880hz_midi_81() {
         let midi = freq_to_midi(880.0);
-        assert!((midi - 81.0).abs() < 0.01, "880 Hz should be MIDI 81, got {midi}");
+        assert!(
+            (midi - 81.0).abs() < 0.01,
+            "880 Hz should be MIDI 81, got {midi}"
+        );
     }
 
     /// A3 = 220 Hz, MIDI 57 (one octave below A4).
     #[test]
     fn test_a3_220hz_midi_57() {
         let midi = freq_to_midi(220.0);
-        assert!((midi - 57.0).abs() < 0.01, "220 Hz should be MIDI 57, got {midi}");
+        assert!(
+            (midi - 57.0).abs() < 0.01,
+            "220 Hz should be MIDI 57, got {midi}"
+        );
     }
 
     /// Octave relationships: doubling frequency = +12 semitones.
@@ -283,23 +306,38 @@ mod tests {
         let f880 = freq_to_midi(880.0);
         let f220 = freq_to_midi(220.0);
 
-        assert!((f880 - f440 - 12.0).abs() < 0.01, "Octave up = +12 semitones");
-        assert!((f440 - f220 - 12.0).abs() < 0.01, "Octave up from A3 = +12 semitones");
-        assert!((f880 - f220 - 24.0).abs() < 0.01, "Two octaves = +24 semitones");
+        assert!(
+            (f880 - f440 - 12.0).abs() < 0.01,
+            "Octave up = +12 semitones"
+        );
+        assert!(
+            (f440 - f220 - 12.0).abs() < 0.01,
+            "Octave up from A3 = +12 semitones"
+        );
+        assert!(
+            (f880 - f220 - 24.0).abs() < 0.01,
+            "Two octaves = +24 semitones"
+        );
     }
 
     /// Reverse conversion: MIDI 69 → 440 Hz.
     #[test]
     fn test_midi_to_freq_69() {
         let freq = midi_to_freq(69.0);
-        assert!((freq - 440.0).abs() < 0.01, "MIDI 69 should be 440 Hz, got {freq}");
+        assert!(
+            (freq - 440.0).abs() < 0.01,
+            "MIDI 69 should be 440 Hz, got {freq}"
+        );
     }
 
     /// Reverse conversion: MIDI 81 → 880 Hz.
     #[test]
     fn test_midi_to_freq_81() {
         let freq = midi_to_freq(81.0);
-        assert!((freq - 880.0).abs() < 0.01, "MIDI 81 should be 880 Hz, got {freq}");
+        assert!(
+            (freq - 880.0).abs() < 0.01,
+            "MIDI 81 should be 880 Hz, got {freq}"
+        );
     }
 
     /// Round-trip: freq → MIDI → freq.
@@ -329,7 +367,10 @@ mod tests {
         // A#4 = 440 * 2^(1/12)
         let asharp = 440.0 * 2.0_f32.powf(1.0 / 12.0);
         let cents = freq_to_cents(asharp);
-        assert!(cents.abs() < 0.01, "A#4 should be 0 cents from nearest semitone, got {cents}");
+        assert!(
+            cents.abs() < 0.01,
+            "A#4 should be 0 cents from nearest semitone, got {cents}"
+        );
     }
 
     /// Cents: quarter-tone up = +50 cents.
@@ -361,7 +402,10 @@ mod tests {
     fn test_every_chromatic_note() {
         for midi in 0..=127 {
             let freq = midi_to_freq(midi as f32);
-            assert!(freq > 0.0 && freq.is_finite(), "MIDI {midi}: freq {freq} not finite");
+            assert!(
+                freq > 0.0 && freq.is_finite(),
+                "MIDI {midi}: freq {freq} not finite"
+            );
 
             let back = nearest_midi(freq);
             assert_eq!(back, midi, "MIDI {midi} round-trip failed: got {back}");
@@ -375,11 +419,11 @@ mod tests {
         assert_eq!(degrees, [0, 2, 4, 5, 7, 9, 11]);
     }
 
-    /// A natural minor: A B C D E F G = [0,2,3,5,7,8,10].
+    /// A natural minor (absolute chromas, key A = chroma 9): A B C D E F G = [9,11,0,2,4,5,7].
     #[test]
     fn test_a_minor_scale() {
         let degrees = scale_degrees(9, ScaleType::NaturalMinor);
-        assert_eq!(degrees, [0, 2, 3, 5, 7, 8, 10]);
+        assert_eq!(degrees, [9, 11, 0, 2, 4, 5, 7]);
     }
 
     /// All 12 major keys.
@@ -391,7 +435,12 @@ mod tests {
             let mut sorted = degrees.to_vec();
             sorted.sort_unstable();
             sorted.dedup();
-            assert_eq!(sorted.len(), 7, "Key {key} major scale has {len} unique notes", len = sorted.len());
+            assert_eq!(
+                sorted.len(),
+                7,
+                "Key {key} major scale has {len} unique notes",
+                len = sorted.len()
+            );
 
             // Tonic should be in the scale.
             assert!(
@@ -414,7 +463,11 @@ mod tests {
                 let mut sorted = degrees.to_vec();
                 sorted.sort_unstable();
                 sorted.dedup();
-                assert_eq!(sorted.len(), 7, "Key {key} {stype:?} scale has wrong degree count");
+                assert_eq!(
+                    sorted.len(),
+                    7,
+                    "Key {key} {stype:?} scale has wrong degree count"
+                );
                 assert!(
                     degrees.contains(&key),
                     "Key {key} tonic not in {stype:?} scale"
@@ -446,7 +499,10 @@ mod tests {
     #[test]
     fn test_nearest_scale_note_a_min() {
         let note = nearest_scale_note(440.0, 9, ScaleType::NaturalMinor);
-        assert_eq!(note, 57, "A (440 Hz) in A minor should map to MIDI 57 (A3), got {note}");
+        assert_eq!(
+            note, 69,
+            "A (440 Hz) in A minor should map to MIDI 69 (A4), got {note}"
+        );
     }
 
     /// Nearest scale note for E (329.63 Hz) in A natural minor.
@@ -454,7 +510,10 @@ mod tests {
     fn test_nearest_scale_note_e_min() {
         let note = nearest_scale_note(329.63, 9, ScaleType::NaturalMinor);
         // E is in A natural minor, should stay on E
-        assert_eq!(note, 52, "E in A minor should map to MIDI 52 (E3), got {note}");
+        assert_eq!(
+            note, 64,
+            "E in A minor should map to MIDI 64 (E4), got {note}"
+        );
     }
 
     /// F# (370 Hz) in A natural minor: nearest scale note should be F# (scale degree 6).
@@ -462,7 +521,10 @@ mod tests {
     fn test_nearest_scale_note_fsharp_min() {
         let note = nearest_scale_note(370.0, 9, ScaleType::HarmonicMinor);
         // F# is in harmonic minor, should map to F#
-        assert_eq!(note, 54, "F# in A harmonic minor should map to MIDI 54, got {note}");
+        assert_eq!(
+            note, 65,
+            "F# in A harmonic minor should map to MIDI 66, got {note}"
+        );
     }
 
     /// Scale notes in octave 5 (MIDI 60-71).
@@ -489,7 +551,10 @@ mod tests {
         for midi in [48, 51, 55, 60, 64, 69, 72] {
             let freq = midi_to_freq(midi as f32);
             let note = nearest_midi(freq);
-            assert_eq!(note, midi, "Chromatic: MIDI {midi} freq should map back to {midi}");
+            assert_eq!(
+                note, midi,
+                "Chromatic: MIDI {midi} freq should map back to {midi}"
+            );
         }
     }
 
@@ -501,7 +566,10 @@ mod tests {
         // C4 is closer, so it should snap to 60.
         let freq = midi_to_freq(61.0);
         let note = nearest_scale_note(freq, 0, ScaleType::Major);
-        assert!(note == 60 || note == 62, "C# in C major should snap to 60 (C) or 62 (D), got {note}");
+        assert!(
+            note == 60 || note == 62,
+            "C# in C major should snap to 60 (C) or 62 (D), got {note}"
+        );
     }
 
     /// All keys produce valid scale notes.
@@ -528,10 +596,7 @@ mod tests {
                         voiced: true,
                     };
                     let result = target.process_frame(raw);
-                    assert!(
-                        result.voiced,
-                        "Key {key} MIDI {midi} should be voiced"
-                    );
+                    assert!(result.voiced, "Key {key} MIDI {midi} should be voiced");
                     assert!(
                         result.frequency_hz > 0.0,
                         "Key {key} MIDI {midi} should produce positive frequency"
@@ -551,7 +616,10 @@ mod tests {
 
         // Corrected frequency should be close to the target.
         let cents_offset = freq_cents_offset(freq, target_freq);
-        assert!(cents_offset.abs() < 0.1, "Correction should bring frequency to target, offset = {cents_offset}");
+        assert!(
+            cents_offset.abs() < 0.1,
+            "Correction should bring frequency to target, offset = {cents_offset}"
+        );
     }
 
     /// Corrected frequency is within the original tolerance band.

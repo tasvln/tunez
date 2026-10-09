@@ -58,13 +58,21 @@ impl Default for TemporalSmoothingConfig {
 }
 
 impl TemporalSmoothingConfig {
-    /// Compute the smoothing factor per sample from tau.
-    /// Returns the per-sample smoothing coefficient.
-    pub fn smoothing_factor(&self, sample_rate: f32) -> f32 {
-        // Per-sample smoothing factor from time constant
-        // factor = 1 - exp(-1 / (tau * sample_rate / 1000))
-        let tau_samples = self.tau_ms / 1000.0 * sample_rate;
-        1.0 - (-1.0 / tau_samples).exp()
+    // /// Compute the smoothing factor per sample from tau.
+    // /// Returns the per-sample smoothing coefficient.
+    // pub fn smoothing_factor(&self, sample_rate: f32) -> f32 {
+    //     // Per-sample smoothing factor from time constant
+    //     // factor = 1 - exp(-1 / (tau * sample_rate / 1000))
+    //     let tau_samples = self.tau_ms / 1000.0 * sample_rate;
+    //     1.0 - (-1.0 / tau_samples).exp()
+    // }
+
+    /// tau_ms describes how long smoothing should take in real time.
+    /// Since `update()` is called once per hop (not once per sample),
+    /// the time constant must be expressed in hops, not samples.
+    pub fn smoothing_factor(&self, sample_rate: f32, hop_size: usize) -> f32 {
+        let tau_frames = (self.tau_ms / 1000.0 * sample_rate / hop_size as f32).max(1.0);
+        1.0 - (-1.0 / tau_frames).exp()
     }
 }
 
@@ -81,25 +89,43 @@ pub struct TemporalSmoothing {
     _sample_rate: f32,
     /// Per-sample smoothing factor (precomputed).
     smooth_factor: f32,
+    hop_size: usize,
 }
 
 impl TemporalSmoothing {
-    /// Create a new temporal smoother.
-    pub fn new(config: TemporalSmoothingConfig, sample_rate: f32) -> Self {
-        let smooth_factor = config.smoothing_factor(sample_rate);
+    // /// Create a new temporal smoother.
+    // pub fn new(config: TemporalSmoothingConfig, sample_rate: f32) -> Self {
+    //     let smooth_factor = config.smoothing_factor(sample_rate);
+    //     Self {
+    //         config,
+    //         smoothed_semitone: 69.0, // Start at A4
+    //         initialized: false,
+    //         unvoiced_count: 0,
+    //         _sample_rate: sample_rate,
+    //         smooth_factor,
+    //     }
+    // }
+
+    // /// Create with default configuration.
+    // pub fn new_default(sample_rate: f32) -> Self {
+    //     Self::new(TemporalSmoothingConfig::default(), sample_rate)
+    // }
+
+    pub fn new(config: TemporalSmoothingConfig, sample_rate: f32, hop_size: usize) -> Self {
+        let smooth_factor = config.smoothing_factor(sample_rate, hop_size);
         Self {
             config,
-            smoothed_semitone: 69.0, // Start at A4
+            smoothed_semitone: 69.0,
             initialized: false,
             unvoiced_count: 0,
             _sample_rate: sample_rate,
+            hop_size,
             smooth_factor,
         }
     }
 
-    /// Create with default configuration.
-    pub fn new_default(sample_rate: f32) -> Self {
-        Self::new(TemporalSmoothingConfig::default(), sample_rate)
+    pub fn new_default(sample_rate: f32, hop_size: usize) -> Self {
+        Self::new(TemporalSmoothingConfig::default(), sample_rate, hop_size)
     }
 
     /// Return a reference to the configuration.
@@ -270,18 +296,30 @@ mod tests {
     fn test_freq_semitone_conversion() {
         // A440 = semitone 69
         let semi = freq_to_semitone(440.0);
-        assert!((semi - 69.0).abs() < 0.01, "440 Hz should be ~69 semitones, got {}", semi);
+        assert!(
+            (semi - 69.0).abs() < 0.01,
+            "440 Hz should be ~69 semitones, got {}",
+            semi
+        );
 
         // Round-trip
         let freq = semitone_to_freq(69.0);
-        assert!((freq - 440.0).abs() < 0.01, "69 semitones should be ~440 Hz, got {}", freq);
+        assert!(
+            (freq - 440.0).abs() < 0.01,
+            "69 semitones should be ~440 Hz, got {}",
+            freq
+        );
     }
 
     #[test]
     fn test_freq_cents() {
         // Perfect semitone: 0 cents
         let cents = freq_to_cents(440.0);
-        assert!(cents.abs() < 0.01, "440 Hz should be 0 cents, got {}", cents);
+        assert!(
+            cents.abs() < 0.01,
+            "440 Hz should be 0 cents, got {}",
+            cents
+        );
 
         // Half step up (A#4 / Bb4): 100 cents from A4,
         // freq_to_cents returns offset from nearest semitone so A#4 = 0 cents.
@@ -298,16 +336,12 @@ mod tests {
         // -50 cents (halfway down): negative range
         let neg_freq = 440.0 * 2.0_f32.powf(-50.0 / 1200.0);
         let cents = freq_to_cents(neg_freq);
-        assert!(
-            (cents - (-50.0)).abs() < 0.5,
-            "-50 cents: got {}",
-            cents
-        );
+        assert!((cents - (-50.0)).abs() < 0.5, "-50 cents: got {}", cents);
     }
 
     #[test]
     fn test_smooth_step_response() {
-        let mut smoother = TemporalSmoothing::new_default(44100.0);
+        let mut smoother = TemporalSmoothing::new_default(44100.0, 1);
 
         // Feed a steady 440 Hz tone
         for _ in 0..500 {
@@ -335,7 +369,7 @@ mod tests {
             velocity_max_semitones: 2.0, // Very tight
             ..Default::default()
         };
-        let mut smoother = TemporalSmoothing::new(config, 44100.0);
+        let mut smoother = TemporalSmoothing::new(config, 44100.0, 1);
 
         // Initialize with 440 Hz
         let init = PitchEstimate {
@@ -368,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_hold_during_unvoiced() {
-        let mut smoother = TemporalSmoothing::new_default(44100.0);
+        let mut smoother = TemporalSmoothing::new_default(44100.0, 1);
 
         // Initialize with 440 Hz
         let init = PitchEstimate {
@@ -398,12 +432,12 @@ mod tests {
     fn test_exponential_smoothing_curve() {
         // Verify that smoothing follows exponential curve
         let config = TemporalSmoothingConfig {
-            tau_ms: 50.0, // Slow smoothing
+            tau_ms: 50.0,                  // Slow smoothing
             velocity_max_semitones: 100.0, // No velocity gating
             ..Default::default()
         };
-        let s = config.smoothing_factor(44100.0);
-        let mut smoother = TemporalSmoothing::new(config, 44100.0);
+        let s = config.smoothing_factor(44100.0, 1);
+        let mut smoother = TemporalSmoothing::new(config, 44100.0, 1);
 
         // Start at 440 Hz
         let start = PitchEstimate {
@@ -445,11 +479,12 @@ mod tests {
     fn test_vibrato_tracking() {
         let mut smoother = TemporalSmoothing::new(
             TemporalSmoothingConfig {
-                tau_ms: 15.0, // Faster tracking for vibrato
+                tau_ms: 15.0,                 // Faster tracking for vibrato
                 velocity_max_semitones: 10.0, // Allow faster changes
                 ..Default::default()
             },
             44100.0,
+            1,
         );
 
         let base_freq = 440.0;

@@ -33,7 +33,6 @@
 
 use crate::pitch::PitchEstimate;
 
-
 /// Configuration for the post-processor.
 #[derive(Debug, Clone)]
 pub struct PostProcessorConfig {
@@ -107,7 +106,12 @@ impl PostProcessor {
 
     /// Process a raw pitch estimate from the YIN detector.
     /// Applies octave correction, voicing decision, and confidence calibration.
-    pub fn process(&mut self, raw: PitchEstimate, yin_value: f32, energy: f32) -> PitchEstimate {
+    pub fn process(
+        &mut self,
+        raw: PitchEstimate,
+        detector_confidence: f32,
+        energy: f32,
+    ) -> PitchEstimate {
         if !raw.voiced {
             self.unvoiced_count += 1;
             self.update_energy(energy);
@@ -118,7 +122,7 @@ impl PostProcessor {
         self.update_energy(energy);
 
         // Step 1: Octave error correction
-        let freq = self.correct_octave(raw.frequency_hz, yin_value);
+        let freq = self.correct_octave(raw.frequency_hz, detector_confidence);
 
         // Step 2: Clamp to valid vocal range
         let freq = freq.clamp(self.config.min_vocal_freq, self.config.max_vocal_freq);
@@ -127,7 +131,7 @@ impl PostProcessor {
         self.prev_freq_hz = Some(freq);
 
         // Step 4: Confidence calibration
-        let confidence = self.calibrate_confidence(yin_value, energy);
+        let confidence = self.calibrate_confidence(detector_confidence, energy);
 
         PitchEstimate {
             frequency_hz: freq,
@@ -137,17 +141,22 @@ impl PostProcessor {
     }
 
     /// Process estimate without energy (simplified version).
-    pub fn process_simplified(&mut self, raw: PitchEstimate, yin_value: f32) -> PitchEstimate {
+    pub fn process_simplified(
+        &mut self,
+        raw: PitchEstimate,
+        detector_confidence: f32,
+    ) -> PitchEstimate {
         if !raw.voiced {
             return self.unvoiced_simplified();
         }
 
-        let freq = self.correct_octave(raw.frequency_hz, yin_value);
+        let freq = self.correct_octave(raw.frequency_hz, detector_confidence);
         let freq = freq.clamp(self.config.min_vocal_freq, self.config.max_vocal_freq);
 
         self.prev_freq_hz = Some(freq);
 
-        let confidence = Self::calibrate_confidence_simplified(self.yin_threshold, yin_value);
+        let confidence =
+            Self::calibrate_confidence_simplified(self.yin_threshold, detector_confidence);
 
         PitchEstimate {
             frequency_hz: freq,
@@ -166,7 +175,7 @@ impl PostProcessor {
     /// Octave error correction.
     /// Checks if the detected frequency is an octave error by comparing with
     /// the previous estimate and checking harmonic consistency.
-    fn correct_octave(&mut self, detected_hz: f32, _yin_value: f32) -> f32 {
+    fn correct_octave(&mut self, detected_hz: f32, _detector_confidenceue: f32) -> f32 {
         let Some(prev_hz) = self.prev_freq_hz else {
             return detected_hz;
         };
@@ -267,10 +276,10 @@ impl PostProcessor {
     }
 
     /// Calibrate confidence from YIN value and energy.
-    fn calibrate_confidence(&self, yin_value: f32, energy: f32) -> f32 {
+    fn calibrate_confidence(&self, detector_confidence: f32, energy: f32) -> f32 {
         // Primary: YIN value (lower = more confident)
         // Map YIN=[0, threshold] -> conf=[1, 0]
-        let yin_conf = (1.0 - yin_value).max(0.0);
+        let yin_conf = detector_confidence.clamp(0.0, 1.0);
 
         // Secondary: energy level (higher = more confident)
         let energy_conf = energy.min(1.0);
@@ -285,8 +294,8 @@ impl PostProcessor {
     /// Simplified confidence calibration (no energy).
     /// Uses the detector's actual threshold for proper normalization.
     /// Accepts the threshold as a parameter so it stays in sync with YinDetectorConfig.
-    pub fn calibrate_confidence_simplified(threshold: f32, yin_value: f32) -> f32 {
-        let conf = 1.0 - (yin_value / threshold).min(1.0);
+    pub fn calibrate_confidence_simplified(threshold: f32, detector_confidence: f32) -> f32 {
+        let conf = 1.0 - (detector_confidence / threshold).min(1.0);
         conf * conf // Squash low confidence values
     }
 }
@@ -318,9 +327,12 @@ mod tests {
 
         for &s in &samples_220 {
             if let Some(est) = detector.process_sample(s) {
-                let yin_val = if est.voiced { 0.05 } else { 0.5 };
+                // edited
+                // let detector_confidence = if est.voiced { 0.05 } else { 0.5 };
+                let detector_confidence = if est.voiced { 0.95 } else { 0.3 };
+
                 let energy = if est.voiced { 0.5 } else { 0.01 };
-                let processed = post.process(est, yin_val, energy);
+                let processed = post.process(est, detector_confidence, energy);
                 if processed.voiced {
                     assert!(
                         processed.frequency_hz >= 180.0 && processed.frequency_hz <= 260.0,
@@ -337,9 +349,11 @@ mod tests {
         let samples_440 = sine_samples(440.0, 200.0, sample_rate);
         for &s in &samples_440 {
             if let Some(est) = detector.process_sample(s) {
-                let yin_val = if est.voiced { 0.05 } else { 0.5 };
+                // let detector_confidence = if est.voiced { 0.05 } else { 0.5 };
+
+                let detector_confidence = if est.voiced { 0.95 } else { 0.3 };
                 let energy = if est.voiced { 0.5 } else { 0.01 };
-                let processed = post.process(est, yin_val, energy);
+                let processed = post.process(est, detector_confidence, energy);
                 if processed.voiced {
                     assert!(
                         processed.frequency_hz >= 350.0 && processed.frequency_hz <= 550.0,
@@ -353,10 +367,13 @@ mod tests {
 
     #[test]
     fn test_velocity_gate() {
-        let mut post = PostProcessor::new(PostProcessorConfig {
-            velocity_max_semitones: 3.0, // Tight velocity gate
-            ..Default::default()
-        }, 0.10);
+        let mut post = PostProcessor::new(
+            PostProcessorConfig {
+                velocity_max_semitones: 3.0, // Tight velocity gate
+                ..Default::default()
+            },
+            0.10,
+        );
 
         // Simulate a large frequency jump
         post.prev_freq_hz = Some(440.0);
@@ -381,12 +398,24 @@ mod tests {
     fn test_confidence_calibration() {
         let post = PostProcessor::new_default();
 
+        // // High confidence: low YIN value, high energy
+        // let c1 = post.calibrate_confidence(0.02, 0.8);
+        // assert!(c1 > 0.7, "High confidence: {:.3}", c1);
+
+        // // Medium confidence: medium YIN value
+        // let c2 = post.calibrate_confidence(0.1, 0.5);
+        // assert!(c2 > 0.3 && c2 < 1.0, "Medium confidence: {:.3}", c2);
+
+        // // Low confidence: high YIN value, zero energy
+        // let c3 = post.calibrate_confidence(0.2, 0.0);
+        // assert!(c3 > 0.0 && c3 < 0.6, "Low confidence: {:.3}", c3);
+
         // High confidence: low YIN value, high energy
-        let c1 = post.calibrate_confidence(0.02, 0.8);
+        let c1 = post.calibrate_confidence(0.95, 0.8);
         assert!(c1 > 0.7, "High confidence: {:.3}", c1);
 
         // Medium confidence: medium YIN value
-        let c2 = post.calibrate_confidence(0.1, 0.5);
+        let c2 = post.calibrate_confidence(0.5, 0.5);
         assert!(c2 > 0.3 && c2 < 1.0, "Medium confidence: {:.3}", c2);
 
         // Low confidence: high YIN value, zero energy
@@ -408,11 +437,14 @@ mod tests {
 
     #[test]
     fn test_frequency_clamping() {
-        let mut post = PostProcessor::new(PostProcessorConfig {
-            min_vocal_freq: 80.0,
-            max_vocal_freq: 1000.0,
-            ..Default::default()
-        }, 0.10);
+        let mut post = PostProcessor::new(
+            PostProcessorConfig {
+                min_vocal_freq: 80.0,
+                max_vocal_freq: 1000.0,
+                ..Default::default()
+            },
+            0.10,
+        );
 
         let raw = PitchEstimate {
             frequency_hz: 50.0, // Below min
@@ -420,7 +452,11 @@ mod tests {
             voiced: true,
         };
         let result = post.process(raw, 0.05, 0.5);
-        assert!(result.frequency_hz >= 80.0, "Clamped to min: {:.2}", result.frequency_hz);
+        assert!(
+            result.frequency_hz >= 80.0,
+            "Clamped to min: {:.2}",
+            result.frequency_hz
+        );
 
         let raw = PitchEstimate {
             frequency_hz: 1500.0, // Above max
@@ -428,7 +464,11 @@ mod tests {
             voiced: true,
         };
         let result = post.process(raw, 0.05, 0.5);
-        assert!(result.frequency_hz <= 1000.0, "Clamped to max: {:.2}", result.frequency_hz);
+        assert!(
+            result.frequency_hz <= 1000.0,
+            "Clamped to max: {:.2}",
+            result.frequency_hz
+        );
     }
 
     #[test]
@@ -450,9 +490,9 @@ mod tests {
             let sample = (2.0 * PI * instant_freq * t).sin();
 
             if let Some(est) = detector.process_sample(sample) {
-                let yin_val = if est.voiced { 0.08 } else { 0.4 };
+                let detector_confidence = if est.voiced { 0.08 } else { 0.4 };
                 let energy = if est.voiced { 0.6 } else { 0.02 };
-                let processed = post.process(est, yin_val, energy);
+                let processed = post.process(est, detector_confidence, energy);
                 if processed.voiced {
                     // Frequency should vary around base
                     let deviation = (processed.frequency_hz - base_freq).abs();
